@@ -3,36 +3,42 @@ import os
 from dotenv import load_dotenv
 import requests
 import datetime
-import speech_recognition as sr
-import pyttsx3
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 import pandas as pd
 
-# Load environment variables (for API key)
+# Load environment variables (API key)
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Initialize TTS engine
-tts_engine = pyttsx3.init()
-tts_engine.setProperty('rate', 150)
-
-def speak(text):
-    tts_engine.say(text)
-    tts_engine.runAndWait()
-
-# Download NLTK data
+# Download NLTK data (only first time)
 nltk.download('vader_lexicon')
 sia = SentimentIntensityAnalyzer()
+
+# System prompt defining the bot's personality and behavior
+SYSTEM_PROMPT = (
+    "You are a warm, empathetic, and non-judgmental mental health assistant. "
+    "Your goal is to listen carefully and deeply understand the user's feelings and experiences. "
+    "Respond with thoughtful, personalized, and supportive advice, just like a compassionate psychologist or counselor. "
+    "Provide motivational words, practical mental wellness tips, coping strategies, and encouragement. "
+    "Validate the user's feelings and gently guide them towards self-care and a positive mindset. "
+    "Always be respectful, kind, and patient. "
+    "Do not give medical or diagnostic advice. "
+    "Make the conversation feel safe and supportive."
+)
 
 # Streamlit UI setup
 st.set_page_config(page_title="Mental Health Chatbot", layout="centered")
 st.title("🧠 Mental Health Chatbot")
 st.markdown("Talk about your feelings. I'm here to listen and support you anonymously. ❤️")
 
-# Mood check-in input
+# Initialize chat history with system prompt if not present
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+# Daily mood check-in section
 st.markdown("### ☀ Daily Mood Check-in")
-user_mood = st.text_input("How are you feeling today?")
+user_mood = st.text_input("How are you feeling today? (Optional, press Enter to submit)")
 
 def save_mood_log(mood, sentiment_score):
     log_file = "mood_log.csv"
@@ -43,12 +49,10 @@ def save_mood_log(mood, sentiment_score):
     else:
         entry.to_csv(log_file, index=False)
 
-# Save mood if user enters it
 if user_mood:
     sentiment = sia.polarity_scores(user_mood)
     score = sentiment['compound']
     save_mood_log(user_mood, score)
-
     if score >= 0.05:
         st.success("You seem positive today! 😊")
     elif score <= -0.05:
@@ -56,60 +60,57 @@ if user_mood:
     else:
         st.info("You're feeling neutral today. Let's talk more!")
 
-# Voice input
-st.markdown("### 🎙 Voice Input (Optional)")
-if st.button("🎧 Speak Now"):
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        st.info("Listening...")
-        audio = r.listen(source)
-    try:
-        user_input = r.recognize_google(audio)
-        st.write("You said:", user_input)
-    except sr.UnknownValueError:
-        st.warning("Sorry, I didn't understand that.")
-        user_input = ""
-else:
-    user_input = st.text_input("💬 Type your message:")
+# Chat input box
+st.markdown("### 💬 Chat with me")
+user_input = st.text_input("Type your message here and press Enter:")
 
-# Function to call OpenRouter API for AI response
-def chat_with_openrouter(user_input):
+def chat_with_openrouter(history):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    system_prompt = (
-        "You are a compassionate, non-judgmental anonymous mental health assistant. "
-        "Whenever the user shares something, provide supportive and personalized advice. "
-        "Speak kindly and encourage them with motivational words and mental wellness tips. "
-        "Be gentle, warm, and helpful, like a friend who deeply understands."
-    )
     payload = {
-        "model": "mistralai/mixtral-8x7b",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
-        ]
+        "model": "mistralai/mixtral-8x7b",  # Free and powerful model
+        "messages": history
     }
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
     return response.json()['choices'][0]['message']['content']
 
-# Generate bot response and speak it
+# Handle new user input
 if user_input:
+    # Append user message to chat history
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.spinner("Thinking..."):
         try:
-            response = chat_with_openrouter(user_input)
-            st.markdown("🤖 Bot: " + response)
-            speak(response)
+            # Get AI response
+            bot_response = chat_with_openrouter(st.session_state.chat_history)
+            # Append bot response to chat history
+            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
         except Exception as e:
-            st.error(f"Failed to connect to AI. Check your API key or internet.\n{e}")
+            st.error(f"Failed to connect to AI. Please check your API key or internet connection.\n{e}")
+            bot_response = None
 
-# Show mood over time chart
+# Display the conversation
+if "chat_history" in st.session_state:
+    for message in st.session_state.chat_history:
+        if message["role"] == "user":
+            st.markdown(f"**You:** {message['content']}")
+        elif message["role"] == "assistant":
+            st.markdown(f"**Bot:** {message['content']}")
+
+# Mood over time graph
 if os.path.exists("mood_log.csv"):
     st.markdown("### 📈 Mood Over Time")
     df = pd.read_csv("mood_log.csv")
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values("timestamp")
     st.line_chart(df.set_index("timestamp")["sentiment"])
+
+# Disclaimer for safety
+st.markdown(
+    "<small><i>Disclaimer: This chatbot is for supportive conversation only and does not replace professional mental health care. "
+    "If you are in crisis or need urgent help, please contact a qualified mental health professional or emergency services.</i></small>",
+    unsafe_allow_html=True
+)
